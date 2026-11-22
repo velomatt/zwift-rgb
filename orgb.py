@@ -1,8 +1,8 @@
 """Minimal dependency-free OpenRGB SDK client.
 
-Speaks protocol version 0 for controller data (the simplest wire format; the
-server down-converts for old clients), which is all we need: LED counts per
-controller, switch to direct/custom mode, and push colors.
+Negotiates protocol version 3 when available (for mode brightness support,
+falling back to version 0 on older servers) to read LED counts per controller,
+switch modes, and push colors.
 """
 import socket
 import struct
@@ -11,17 +11,20 @@ HDR = struct.Struct("<4sIII")  # magic, device idx, packet id, data size
 
 REQUEST_CONTROLLER_COUNT = 0
 REQUEST_CONTROLLER_DATA = 1
+REQUEST_PROTOCOL_VERSION = 40
 SET_CLIENT_NAME = 50
 UPDATELEDS = 1050
 SETCUSTOMMODE = 1100
 UPDATEMODE = 1101
+
+MODE_FLAG_HAS_BRIGHTNESS = 0x10
 
 
 class Controller:
     def __init__(self, idx, name, num_leds, modes, active_mode, zones):
         self.idx, self.name, self.num_leds = idx, name, num_leds
         self.zones = zones  # list of (zone name, led count), in LED order
-        self.modes = modes  # list of (name, raw v0 mode description bytes)
+        self.modes = modes  # list of (name, raw mode description bytes)
         self.active_mode = active_mode
 
     @property
@@ -51,22 +54,25 @@ class _Reader:
         self.i += n
 
 
-def _parse_controller_v0(idx, data):
+def _parse_controller(idx, data, proto):
     r = _Reader(data)
     r.take("<I")  # data size
     r.take("<i")  # type
     name = r.string()
+    if proto >= 1:
+        r.string()  # vendor
     r.string()  # description
     r.string()  # version
     r.string()  # serial
     r.string()  # location
     num_modes = r.take("<H")
     active_mode = r.take("<i")
+    mode_u32s = 12 if proto >= 3 else 9
     modes = []
     for _ in range(num_modes):
         start = r.i
         mname = r.string()
-        r.skip(4 * 9)  # value, flags, speed_min/max, colors_min/max, speed, direction, color_mode
+        r.skip(4 * mode_u32s)
         r.skip(4 * r.take("<H"))  # mode colors
         modes.append((mname, bytes(data[start : r.i])))
     num_zones = r.take("<H")
@@ -80,11 +86,35 @@ def _parse_controller_v0(idx, data):
     return Controller(idx, name, num_leds, modes, active_mode, zones)
 
 
+def _with_max_brightness(raw_mode):
+    """Set mode brightness to brightness_max in a protocol v3 mode blob."""
+    nlen = struct.unpack_from("<H", raw_mode, 0)[0]
+    off = 2 + nlen
+    vals = list(struct.unpack_from("<12I", raw_mode, off))
+    flags, br_max = vals[1], vals[5]
+    if (flags & MODE_FLAG_HAS_BRIGHTNESS) and br_max > 0:
+        vals[9] = br_max
+        buf = bytearray(raw_mode)
+        struct.pack_into("<12I", buf, off, *vals)
+        return bytes(buf)
+    return raw_mode
+
+
 class OpenRGB:
     def __init__(self, host="127.0.0.1", port=6742, name="zwift-rgb", timeout=5):
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self._send(0, SET_CLIENT_NAME, name.encode() + b"\0")
+        self.proto = self._negotiate_proto(3)
         self.controllers = self._list()
+
+    def _negotiate_proto(self, want):
+        try:
+            self._send(0, REQUEST_PROTOCOL_VERSION, struct.pack("<I", want))
+            _, data = self._recv(REQUEST_PROTOCOL_VERSION)
+            server_ver = struct.unpack("<I", data)[0]
+            return min(want, server_ver) if server_ver >= 3 else 0
+        except OSError:
+            return 0
 
     def close(self):
         try:
@@ -118,17 +148,38 @@ class OpenRGB:
         self._send(0, REQUEST_CONTROLLER_COUNT)
         _, data = self._recv(REQUEST_CONTROLLER_COUNT)
         count = struct.unpack("<I", data)[0]
+        req = struct.pack("<I", self.proto) if self.proto >= 1 else b""
         out = []
         for i in range(count):
-            self._send(i, REQUEST_CONTROLLER_DATA)
+            self._send(i, REQUEST_CONTROLLER_DATA, req)
             _, data = self._recv(REQUEST_CONTROLLER_DATA)
-            out.append(_parse_controller_v0(i, data))
+            out.append(_parse_controller(i, data, self.proto))
         return out
 
     def set_custom_mode(self, controllers=None):
         for c in controllers if controllers is not None else self.controllers:
             self._send(c.idx, SETCUSTOMMODE)
         self.controllers = self._list()  # pick up the resulting active modes
+
+    def set_mode(self, mode_name, controllers=None, max_brightness=True):
+        """Switch each controller to the named mode (case-insensitive), falling
+        back to SETCUSTOMMODE if the controller has no matching mode. On SDK v3+,
+        sets brightness to brightness_max when max_brightness is true."""
+        want = mode_name.lower()
+        for c in controllers if controllers is not None else self.controllers:
+            match = next(
+                ((i, raw) for i, (n, raw) in enumerate(c.modes) if n.lower() == want),
+                None,
+            )
+            if match is None:
+                self._send(c.idx, SETCUSTOMMODE)
+                continue
+            midx, raw = match
+            if self.proto >= 3 and max_brightness:
+                raw = _with_max_brightness(raw)
+            body = struct.pack("<i", midx) + raw
+            self._send(c.idx, UPDATEMODE, struct.pack("<I", len(body) + 4) + body)
+        self.controllers = self._list()
 
     def reapply_mode(self, c):
         """Re-send the active mode. Devices without a Direct mode (e.g. the
