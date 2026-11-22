@@ -14,6 +14,7 @@ Environment=ZRGB_PROFILE=YourProfile
 #Environment=ZRGB_IFACE=eth0
 #Environment="ZRGB_TINT=Addressable RGB Header 1=1,0.45,1"
 #Environment=ZRGB_PULSE_RATIO=5
+#Environment=ZRGB_MODE=Static
 ExecStart=/usr/bin/python3 -I -u /home/YOUR_USER/git/zwift-rgb/zwift_rgb.py
 # tcpdump needs raw capture; grant just that instead of running as root.
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN

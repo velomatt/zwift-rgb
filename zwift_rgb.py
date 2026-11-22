@@ -25,6 +25,9 @@ Env config:
                             LED strips; several zones separated by ';'
   ZRGB_SLOW_INTERVAL=0      min seconds between writes to devices without a
                             Direct mode (Akko keyboard); 0 = leave them alone
+  ZRGB_MODE=                OpenRGB mode to activate for fast devices (default:
+                            Direct via SETCUSTOMMODE); set to Static for
+                            controllers whose Direct mode does not light up
   ZRGB_PCAP=-               read pcap from a file instead of tcpdump (testing)
 """
 import collections
@@ -53,6 +56,7 @@ PULSE_RATIO = float(os.environ.get("ZRGB_PULSE_RATIO", "5"))
 PULSE_FLOOR = float(os.environ.get("ZRGB_PULSE_FLOOR", "0.35"))
 PULSE_ATTACK = float(os.environ.get("ZRGB_PULSE_ATTACK", "0.15"))
 HR_PORT = int(os.environ.get("ZRGB_HR_PORT", "35199"))
+MODE = os.environ.get("ZRGB_MODE", "").strip()
 HR_STALE = 5.0  # seconds without HR before pulsing stops
 TINT = {}
 for _item in os.environ.get("ZRGB_TINT", "").split(";"):
@@ -251,7 +255,10 @@ class Lights:
             try:
                 o = self._conn()
                 if not self.active:
-                    o.set_custom_mode(self.fast)  # slow devices stay in their Static mode
+                    if MODE:
+                        o.set_mode(MODE, self.fast)
+                    else:
+                        o.set_custom_mode(self.fast)  # slow devices stay in their Static mode
                     self.active = True
                 if rgb != self.sent:
                     o.set_all(rgb, self.fast, TINT)
