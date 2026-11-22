@@ -134,7 +134,7 @@ file over again (step 5), then run
 | `ZRGB_PULSE_ATTACK` | `0.15` | Fraction of each pulse spent rising (about 0.5 gives an even "breathing" fade) |
 | `ZRGB_HR_PORT` | `35199` | TCP port used by zwift-linux-ble |
 | `ZRGB_SLOW_INTERVAL` | `0` | Minimum seconds between writes to devices without a Direct mode; `0` skips them |
-| `ZRGB_MODE` | *(auto / Direct)* | OpenRGB mode to activate for fast devices (e.g. `Static` at full brightness for controllers whose `Direct` mode stays dark) |
+| `ZRGB_MODE` | *(Direct)* | OpenRGB mode to use instead of `Direct`, at full brightness, as `controller=mode` pairs separated by `;` (e.g. `HP Omen 30L=Static`). A bare mode name applies to every device with a `Direct` mode |
 
 ### Power zones
 
@@ -193,7 +193,10 @@ ZRGB_PCAP=dircon.pcap python3 zwift_rgb.py
   Some OEM RGB controllers (for example, HP Omen 30L) advertise a `Direct` mode
   that does not actually drive the LEDs, while `Static` mode works normally with
   live `UPDATELEDS` updates. Set `ZRGB_MODE=Static` so zwift-rgb initializes the
-  controller in `Static` mode at full brightness instead of `Direct`.
+  controller in `Static` mode at full brightness instead of `Direct`. Name the
+  controller (as `python3 orgb.py` prints it), e.g.
+  `ZRGB_MODE="HP Omen 30L=Static"`, so your other devices stay in `Direct`;
+  many controllers ignore live color updates in `Static` mode.
 - **A device gets stuck on one color.** Devices without a **Direct** mode get a
   full mode update for every color change. Some firmware can't keep up and locks
   up; replugging the device and restarting OpenRGB usually fixes it. These

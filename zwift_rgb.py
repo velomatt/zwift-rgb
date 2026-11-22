@@ -25,9 +25,12 @@ Env config:
                             LED strips; several zones separated by ';'
   ZRGB_SLOW_INTERVAL=0      min seconds between writes to devices without a
                             Direct mode (Akko keyboard); 0 = leave them alone
-  ZRGB_MODE=                OpenRGB mode to activate for fast devices (default:
-                            Direct via SETCUSTOMMODE); set to Static for
-                            controllers whose Direct mode does not light up
+  ZRGB_MODE="HP Omen 30L=Static"
+                            (example) OpenRGB mode to activate per controller
+                            instead of Direct, at full brightness, for controllers
+                            whose Direct mode does not light up; several separated
+                            by ';'. A bare mode name (no '=') applies to every
+                            fast device. Unset = Direct for all.
   ZRGB_PCAP=-               read pcap from a file instead of tcpdump (testing)
 """
 import collections
@@ -56,7 +59,14 @@ PULSE_RATIO = float(os.environ.get("ZRGB_PULSE_RATIO", "5"))
 PULSE_FLOOR = float(os.environ.get("ZRGB_PULSE_FLOOR", "0.35"))
 PULSE_ATTACK = float(os.environ.get("ZRGB_PULSE_ATTACK", "0.15"))
 HR_PORT = int(os.environ.get("ZRGB_HR_PORT", "35199"))
-MODE = os.environ.get("ZRGB_MODE", "").strip()
+MODE_ALL = ""  # mode for fast devices not named in MODES; "" = Direct
+MODES = {}
+for _item in os.environ.get("ZRGB_MODE", "").split(";"):
+    if "=" in _item:
+        _name, _mode = _item.rsplit("=", 1)
+        MODES[_name.strip()] = _mode.strip()
+    elif _item.strip():
+        MODE_ALL = _item.strip()
 HR_STALE = 5.0  # seconds without HR before pulsing stops
 TINT = {}
 for _item in os.environ.get("ZRGB_TINT", "").split(";"):
@@ -248,17 +258,29 @@ class Lights:
             self.slow = [c for c in self.o.controllers if not c.has_direct] if SLOW_INTERVAL > 0 else []
             log(f"OpenRGB connected: {len(self.fast)} fast,",
                 f"{len(self.slow)} slow ({', '.join(c.name for c in self.slow) or '-'})")
+            unknown = set(MODES) - {c.name for c in self.fast}
+            if unknown:
+                log("ZRGB_MODE: no fast controller named", ", ".join(sorted(unknown)))
         return self.o
+
+    def _activate(self, o):
+        """Put fast devices in Direct mode, or the mode ZRGB_MODE gives them.
+        Slow devices stay in their Static mode."""
+        by_mode = collections.defaultdict(list)
+        for c in self.fast:
+            by_mode[MODES.get(c.name, MODE_ALL)].append(c)
+        for mode, cs in by_mode.items():
+            if mode:
+                o.set_mode(mode, cs)
+            else:
+                o.set_custom_mode(cs)
 
     def color(self, rgb, zone_rgb):
         for attempt in (1, 2):
             try:
                 o = self._conn()
                 if not self.active:
-                    if MODE:
-                        o.set_mode(MODE, self.fast)
-                    else:
-                        o.set_custom_mode(self.fast)  # slow devices stay in their Static mode
+                    self._activate(o)
                     self.active = True
                 if rgb != self.sent:
                     o.set_all(rgb, self.fast, TINT)
